@@ -1,7 +1,8 @@
 """Evaluate the system on the labeled sample set.
 
 Runs `pipeline.process_claim` on the input columns of sample_claims.csv,
-compares predictions to the gold labels, and prints per-field metrics.
+compares predictions to the gold labels, and writes per-field metrics to
+eval_report.md (also printed to stdout).
 
 Run from anywhere:
     uv run python code/evaluation/main.py            # run + score all 20
@@ -27,6 +28,7 @@ from pipeline import process_claim    # noqa: E402
 from writer import write_output_csv   # noqa: E402
 
 PRED_PATH = "eval_predictions.csv"
+REPORT_PATH = "eval_report.md"
 
 EXACT_FIELDS = [
     "claim_status",
@@ -56,7 +58,9 @@ def exact_accuracy(gold, pred, field) -> float:
 
 
 def confusion_and_macro_f1(gold, pred, field):
-    classes = sorted({norm(r[field]) for r in gold} | {norm(r[field]) for r in pred})
+    gold_set = {norm(r[field]) for r in gold}
+    pred_set = {norm(r[field]) for r in pred}
+    classes = sorted(gold_set | pred_set)
     confusion = {g: {p: 0 for p in classes} for g in classes}
     for g, p in zip(gold, pred):
         confusion[norm(g[field])][norm(p[field])] += 1
@@ -143,45 +147,99 @@ def run_predictions(limit) -> list:
 
 
 # ---------- report ----------
-def report(gold, pred) -> None:
+def _confusion_md(confusion) -> list:
+    cols = list(confusion.keys())
+    lines = ["| gold \\ pred | " + " | ".join(cols) + " |"]
+    lines.append("|" + "---|" * (len(cols) + 1))
+    for g in cols:
+        cells = " | ".join(str(confusion[g][p]) for p in cols)
+        lines.append(f"| **{g}** | {cells} |")
+    return lines
+
+
+def build_report(gold, pred) -> str:
     n = len(gold)
-    print(f"\n===== EVALUATION ({n} rows) =====")
+    lines = ["# Evaluation Report", "", f"Rows scored: **{n}**", ""]
 
     confusion, per_class, macro_f1 = confusion_and_macro_f1(
         gold, pred, "claim_status")
     acc = exact_accuracy(gold, pred, "claim_status")
-    print("\n[claim_status]  (primary)")
-    print(f"  accuracy={acc:.3f}  macro_f1={macro_f1:.3f}")
+    lines += [
+        "## claim_status (primary)",
+        "",
+        f"- accuracy: **{acc:.3f}**",
+        f"- macro F1: **{macro_f1:.3f}**",
+        "",
+        "| class | precision | recall | f1 |",
+        "|---|---|---|---|",
+    ]
     for c, m in per_class.items():
-        print(f"    {c:25s} P={m['precision']:.2f} "
-              f"R={m['recall']:.2f} F1={m['f1']:.2f}")
-    print("  confusion (gold rows -> pred cols):")
-    cols = list(confusion.keys())
-    print("    " + " ".join(f"{c[:6]:>7}" for c in cols))
-    for g in cols:
-        line = " ".join(f"{confusion[g][p]:>7}" for p in cols)
-        print(f"    {g[:6]:>6}{line}")
+        lines.append(
+            f"| {c} | {m['precision']:.2f} | {m['recall']:.2f} "
+            f"| {m['f1']:.2f} |"
+        )
+    lines += ["", "**Confusion matrix:**", ""]
+    lines += _confusion_md(confusion)
 
-    print("\n[categorical accuracy]")
+    lines += [
+        "",
+        "## Categorical accuracy",
+        "",
+        "| field | accuracy |",
+        "|---|---|",
+    ]
     for field in EXACT_FIELDS:
-        print(f"  {field:24s} acc={exact_accuracy(gold, pred, field):.3f}")
+        lines.append(f"| {field} | {exact_accuracy(gold, pred, field):.3f} |")
 
-    print("\n[severity] (ordinal)")
+    lines += [
+        "",
+        "## Severity (ordinal)",
+        "",
+        "| metric | value |",
+        "|---|---|",
+    ]
     for k, v in severity_metrics(gold, pred).items():
-        print(f"  {k:24s} {v:.3f}")
+        lines.append(f"| {k} | {v:.3f} |")
 
-    print("\n[set fields]")
+    lines += [
+        "",
+        "## Set fields",
+        "",
+        "| field | micro_P | micro_R | micro_F1 | jaccard | exact_set |",
+        "|---|---|---|---|---|---|",
+    ]
     for field in SET_FIELDS:
         m = set_metrics(gold, pred, field)
-        print(f"  {field}")
-        for k, v in m.items():
-            print(f"    {k:18s} {v:.3f}")
+        lines.append(
+            f"| {field} | {m['micro_precision']:.3f} | "
+            f"{m['micro_recall']:.3f} | {m['micro_f1']:.3f} | "
+            f"{m['jaccard']:.3f} | {m['exact_set_match']:.3f} |"
+        )
 
-    print("\n[mismatched rows: claim_status]")
-    for g, p in zip(gold, pred):
-        if norm(g["claim_status"]) != norm(p["claim_status"]):
-            print(f"  {g['user_id']}: gold={g['claim_status']} "
-                  f"pred={p['claim_status']}")
+    lines += ["", "## Mismatched rows (claim_status)", ""]
+    mismatches = [
+        (g, p) for g, p in zip(gold, pred)
+        if norm(g["claim_status"]) != norm(p["claim_status"])
+    ]
+    if mismatches:
+        lines += ["| user_id | gold | pred |", "|---|---|---|"]
+        for g, p in mismatches:
+            lines.append(
+                f"| {g['user_id']} | {g['claim_status']} "
+                f"| {p['claim_status']} |"
+            )
+    else:
+        lines.append("None - all claim_status predictions matched.")
+
+    return "\n".join(lines) + "\n"
+
+
+def report(gold, pred, path=REPORT_PATH) -> None:
+    md = build_report(gold, pred)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(md)
+    print(md)
+    print(f"Wrote report to {path}")
 
 
 def main() -> None:
