@@ -1,0 +1,19 @@
+[project]
+name = "hackerrank-orchestrate-june26"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.111.0",
+    "pandas>=3.0.3",
+    "pillow>=12.2.0",
+    "pillow-avif-plugin>=1.5.5",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.14.2",
+    "pytest>=9.1.1",
+    "python-dotenv>=1.2.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["code"]
